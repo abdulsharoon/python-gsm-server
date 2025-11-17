@@ -1,47 +1,52 @@
-from flask import Flask, request, jsonify
+from flask import Flask
 import requests
+import threading
 import time
 
 app = Flask(__name__)
 
-FIREBASE_URL = "https://modbuscapture-default-rtdb.asia-southeast1.firebasedatabase.app/deviceData.json"
+# 🟩 Firebase A (where GSM writes)
+FIREBASE_A = "https://gsmdatatoserver-default-rtdb.asia-southeast1.firebasedatabase.app/GSM_Data.json"
 
-@app.route("/post", methods=["POST"])
-def receive_from_gsm():
-    try:
-        data = request.get_json(force=True)
-        print("Received from GSM:", data)
-        data["timestamp"] = int(time.time())
-        fb = requests.post(FIREBASE_URL, json=data)
-        return jsonify({
-            "status": "ok",
-            "firebase_status": fb.status_code,
-            "firebase_response": fb.text
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# 🟦 Firebase B (your ORIGINAL project → meter_data)
+FIREBASE_B = "https://modbuscapture-default-rtdb.asia-southeast1.firebasedatabase.app/meter_data.json"
+
+last_key = None   # To detect new GSM data
+
+def sync_loop():
+    global last_key
+    while True:
+        try:
+            # 1️⃣ Read all GSM nodes from Firebase A
+            data = requests.get(FIREBASE_A).json()
+
+            if data:
+                # get the LATEST push-ID entry
+                latest_key = list(data.keys())[-1]
+                latest_value = data[latest_key]
+
+                # 2️⃣ Only forward NEW data
+                if latest_key != last_key:
+                    print("Forwarding:", latest_value)
+
+                    # 3️⃣ PUT into meter_data of Firebase B
+                    requests.put(FIREBASE_B, json=latest_value)
+
+                    # Save this key as last processed
+                    last_key = latest_key
+
+        except Exception as e:
+            print("Sync error:", e)
+
+        time.sleep(3)   # Check every 3 seconds
 
 
-@app.route("/", methods=["GET"])
+# Start sync thread
+threading.Thread(target=sync_loop, daemon=True).start()
+
+@app.route("/")
 def home():
-    return "Python GSM Server Running OK"
-
-
-# 🔥 NEW TEST ENDPOINT
-@app.route("/testfirebase")
-def test_firebase():
-    test_data = {
-        "server_test": "hello_from_python_server",
-        "timestamp": int(time.time())
-    }
-    fb = requests.post(FIREBASE_URL, json=test_data)
-    return jsonify({
-        "message": "Test sent to Firebase",
-        "firebase_status": fb.status_code,
-        "firebase_response": fb.text
-    })
-
+    return "Firebase A → Firebase B sync running OK"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
